@@ -21,42 +21,42 @@ The default configuration installs the latest version of Terraform CLI and insta
 
 ```yaml
 steps:
-- uses: hashicorp/setup-terraform@v1
+- uses: hashicorp/setup-terraform@v2
 ```
 
 A specific version of Terraform CLI can be installed.
 
 ```yaml
 steps:
-- uses: hashicorp/setup-terraform@v1
+- uses: hashicorp/setup-terraform@v2
   with:
-    terraform_version: 0.12.25
+    terraform_version: 1.1.7
 ```
 
-Credentials for Terraform Cloud (app.terraform.io) can be configured.
+Credentials for Terraform Cloud ([app.terraform.io](https://app.terraform.io/)) can be configured.
 
 ```yaml
 steps:
-- uses: hashicorp/setup-terraform@v1
+- uses: hashicorp/setup-terraform@v2
   with:
     cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 ```
 
-Credentials for Terraform Enterprise can be configured.
+Credentials for Terraform Enterprise (TFE) can be configured:
 
 ```yaml
 steps:
-- uses: hashicorp/setup-terraform@v1
+- uses: hashicorp/setup-terraform@v2
   with:
     cli_config_credentials_hostname: 'terraform.example.com'
     cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 ```
 
-The wrapper script installation can be skipped.
+The wrapper script installation can be skipped by setting the `terraform_wrapper` variable to `false`:
 
 ```yaml
 steps:
-- uses: hashicorp/setup-terraform@v1
+- uses: hashicorp/setup-terraform@v2
   with:
     terraform_wrapper: false
 ```
@@ -66,7 +66,7 @@ Subsequent steps can access outputs when the wrapper script is installed.
 
 ```yaml
 steps:
-- uses: hashicorp/setup-terraform@v1
+- uses: hashicorp/setup-terraform@v2
 
 - run: terraform init
 
@@ -86,7 +86,7 @@ defaults:
     working-directory: ${{ env.tf_actions_working_dir }}
 steps:
 - uses: actions/checkout@v2
-- uses: hashicorp/setup-terraform@v1
+- uses: hashicorp/setup-terraform@v2
 
 - name: Terraform fmt
   id: fmt
@@ -106,7 +106,7 @@ steps:
   run: terraform plan -no-color
   continue-on-error: true
 
-- uses: actions/github-script@0.9.0
+- uses: actions/github-script@v6
   if: github.event_name == 'pull_request'
   env:
     PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
@@ -115,7 +115,15 @@ steps:
     script: |
       const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
       #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
-      #### Terraform Validation 🤖\`${{ steps.validate.outputs.stdout }}\`
+      #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+      <details><summary>Validation Output</summary>
+
+      \`\`\`\n
+      ${{ steps.validate.outputs.stdout }}
+      \`\`\`
+
+      </details>
+
       #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
       
       <details><summary>Show Plan</summary>
@@ -128,12 +136,99 @@ steps:
       
       *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Working Directory: \`${{ env.tf_actions_working_dir }}\`, Workflow: \`${{ github.workflow }}\`*`;
         
-      github.issues.createComment({
+      github.rest.issues.createComment({
         issue_number: context.issue.number,
         owner: context.repo.owner,
         repo: context.repo.repo,
         body: output
       })
+```
+
+Instead of creating a new comment each time, you can also update an existing one:
+
+```yaml
+defaults:
+  run:
+    working-directory: ${{ env.tf_actions_working_dir }}
+steps:
+- uses: actions/checkout@v2
+- uses: hashicorp/setup-terraform@v2
+
+- name: Terraform fmt
+  id: fmt
+  run: terraform fmt -check
+  continue-on-error: true
+
+- name: Terraform Init
+  id: init
+  run: terraform init
+
+- name: Terraform Validate
+  id: validate
+  run: terraform validate -no-color
+
+- name: Terraform Plan
+  id: plan
+  run: terraform plan -no-color
+  continue-on-error: true
+
+- uses: actions/github-script@v6
+  if: github.event_name == 'pull_request'
+  env:
+    PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    script: |
+      // 1. Retrieve existing bot comments for the PR
+      const { data: comments } = await github.rest.issues.listComments({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: context.issue.number,
+      })
+      const botComment = comments.find(comment => {
+        return comment.user.type === 'Bot' && comment.body.includes('Terraform Format and Style')
+      })
+
+      // 2. Prepare format of the comment
+      const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+      #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
+      #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+      <details><summary>Validation Output</summary>
+
+      \`\`\`\n
+      ${{ steps.validate.outputs.stdout }}
+      \`\`\`
+
+      </details>
+
+      #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+      
+      <details><summary>Show Plan</summary>
+      
+      \`\`\`\n
+      ${process.env.PLAN}
+      \`\`\`
+      
+      </details>
+      
+      *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Working Directory: \`${{ env.tf_actions_working_dir }}\`, Workflow: \`${{ github.workflow }}\`*`;
+      
+      // 3. If we have a comment, update it, otherwise create a new one
+      if (botComment) {
+        github.rest.issues.updateComment({
+          owner: context.repo.owner,
+          repo: context.repo.repo,
+          comment_id: botComment.id,
+          body: output
+        })
+      } else {
+        github.rest.issues.createComment({
+          issue_number: context.issue.number,
+          owner: context.repo.owner,
+          repo: context.repo.repo,
+          body: output
+        })
+      }
 ```
 
 ## Inputs
@@ -148,19 +243,18 @@ The action supports the following inputs:
 
 - `terraform_version` - (optional) The version of Terraform CLI to install. Instead of a full version string,
    you can also specify a constraint string (see [Semver Ranges](https://www.npmjs.com/package/semver#ranges)
-   for available range specifications). Examples are: `<0.14.0`, `~0.13.0`, `0.13.x` (all three installing
-   the latest available 0.13 version). Prerelease versions can be specified and a range will stay within the
+   for available range specifications). Examples are: `<1.2.0`, `~1.1.0`, `1.1.7` (all three installing
+   the latest available `1.1` version). Prerelease versions can be specified and a range will stay within the
    given tag such as `beta` or `rc`. If no version is given, it will default to `latest`.
 
 - `terraform_wrapper` - (optional) Whether to install a wrapper to wrap subsequent calls of 
    the `terraform` binary and expose its STDOUT, STDERR, and exit code as outputs
    named `stdout`, `stderr`, and `exitcode` respectively. Defaults to `true`.
 
-
 ## Outputs
 
 This action does not configure any outputs directly. However, when you set the `terraform_wrapper` input
-to `true`, the following outputs is available for subsequent steps that call the `terraform` binary.
+to `true`, the following outputs are available for subsequent steps that call the `terraform` binary.
 
 - `stdout` - The STDOUT stream of the call to the `terraform` binary.
 
